@@ -24,7 +24,37 @@
       <!-- Quando LOGADO -->
       <div id="navAuthed" class="ms-auto d-none">
         <div class="d-flex align-items-center gap-2">
-          <span id="userChip" class="badge text-bg-secondary">...</span>
+          <div class="dropdown">
+            <button class="btn btn-outline-light btn-sm d-flex align-items-center gap-2 user-menu"
+              data-bs-toggle="dropdown" aria-expanded="false" id="userMenuBtn" type="button">
+              <img id="userAvatar" class="avatar" alt="Avatar" />
+              <span id="userChip" class="user-name">...</span>
+              <span class="chev">▾</span>
+            </button>
+
+            <ul class="dropdown-menu dropdown-menu-end shadow-sm rounded-4 p-2" aria-labelledby="userMenuBtn">
+              <li class="px-2 pt-1 pb-2">
+                <div class="small text-secondary">Conta</div>
+                <div id="userEmail" class="fw-semibold small text-truncate"></div>
+              </li>
+              <li>
+                <hr class="dropdown-divider my-2">
+              </li>
+
+              <li>
+                <button id="btnProfile" class="dropdown-item rounded-3" type="button">
+                  👤 Perfil
+                </button>
+              </li>
+
+              <li>
+                <button id="btnLogout" class="dropdown-item rounded-3 text-warning" type="button">
+                  🚪 Sair
+                </button>
+              </li>
+            </ul>
+          </div>
+
           <button id="btnExport" class="btn btn-outline-light btn-sm">Exportar JSON</button>
           <label class="btn btn-outline-light btn-sm mb-0">
             Importar JSON <input id="fileImport" type="file" accept="application/json" hidden>

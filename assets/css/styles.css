@@ -41,3 +41,40 @@
 #appView {
   transition: opacity 0.2s ease;
 }
+/* ============================= */
+/* USER DROPDOWN (SaaS-ish) */
+/* ============================= */
+.user-menu {
+  border-radius: 999px;
+  padding: 6px 10px;
+}
+
+.avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  object-fit: cover;
+  background: rgba(255,255,255,.12);
+  display: inline-block;
+}
+
+.user-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chev {
+  opacity: .8;
+  font-size: .85rem;
+}
+
+.dropdown-menu .dropdown-item {
+  padding: .55rem .65rem;
+}
+
+.dropdown-menu .dropdown-item:active {
+  background: rgba(13,110,253,.12);
+  color: inherit;
+}

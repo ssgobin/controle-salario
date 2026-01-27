@@ -2,6 +2,10 @@
 // Dica: abra index.html via Live Server (VSCode) para facilitar.
 
 const $ = (sel) => document.querySelector(sel);
+const userAvatar = document.getElementById("userAvatar");
+const userEmailEl = document.getElementById("userEmail");
+const btnProfile = document.getElementById("btnProfile");
+
 
 // ================================
 // Firebase init (COMPAT)
@@ -32,6 +36,33 @@ async function ensureAuth() {
   UID = res.user.uid;
   return UID;
 }
+
+function userDocRef(uid) {
+  return db.collection("users").doc(uid);
+}
+
+async function upsertUserProfile(user) {
+  if (!user) return;
+
+  const ref = userDocRef(user.uid);
+  const snap = await ref.get();
+
+  const payload = {
+    uid: user.uid,
+    name: user.displayName || "",
+    email: user.email || "",
+    photoURL: user.photoURL || "",
+    provider: (user.providerData?.[0]?.providerId) || "unknown",
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (!snap.exists) {
+    payload.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+  }
+
+  await ref.set(payload, { merge: true });
+}
+
 // ================================
 // AUTH UI
 // ================================
@@ -63,8 +94,32 @@ function showApp(user) {
   appView.classList.remove("d-none");
   navAuthed.classList.remove("d-none");
 
-  userChip.textContent = user.email || "Usuário Google";
+  const name = user.displayName || (user.email ? user.email.split("@")[0] : "Usuário");
+  const email = user.email || "";
+
+  userChip.textContent = name;
+  if (userEmailEl) userEmailEl.textContent = email;
+
+  // Foto Google (ou fallback)
+  const photo = user.photoURL;
+  if (userAvatar) {
+    if (photo) {
+      userAvatar.src = photo;
+      userAvatar.style.visibility = "visible";
+    } else {
+      // fallback: avatar “transparente” com iniciais via data URL simples
+      const initial = (name || "U").trim().slice(0, 1).toUpperCase();
+      const svg = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+          <rect width="100%" height="100%" rx="32" ry="32" fill="#6c757d"/>
+          <text x="50%" y="54%" text-anchor="middle" font-size="28" fill="white" font-family="Arial" font-weight="700">${initial}</text>
+        </svg>`;
+      userAvatar.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+      userAvatar.style.visibility = "visible";
+    }
+  }
 }
+
 
 function showError(msg) {
   authMsg.textContent = msg;
@@ -123,14 +178,25 @@ btnLogout?.addEventListener("click", async () => {
 // ================================
 // Auth State Listener
 // ================================
-auth.onAuthStateChanged((user) => {
+auth.onAuthStateChanged(async (user) => {
   if (user) {
     UID = user.uid;
+
+    // 1) Atualiza UI
     showApp(user);
+
+    // 2) Salva/atualiza perfil no Firestore
+    try {
+      await upsertUserProfile(user);
+    } catch (e) {
+      console.warn("Falha ao salvar perfil no Firestore:", e);
+    }
+
   } else {
     showAuth();
   }
 });
+
 
 // ================================
 // Firestore helpers
