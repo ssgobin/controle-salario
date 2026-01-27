@@ -32,6 +32,105 @@ async function ensureAuth() {
   UID = res.user.uid;
   return UID;
 }
+// ================================
+// AUTH UI
+// ================================
+const authView = document.getElementById("authView");
+const appView = document.getElementById("appView");
+const navAuthed = document.getElementById("navAuthed");
+const userChip = document.getElementById("userChip");
+const authMsg = document.getElementById("authMsg");
+
+const btnGoogle = document.getElementById("btnGoogle");
+const btnEmailLogin = document.getElementById("btnEmailLogin");
+const btnEmailSignup = document.getElementById("btnEmailSignup");
+const btnLogout = document.getElementById("btnLogout");
+
+const loginEmail = document.getElementById("loginEmail");
+const loginPassword = document.getElementById("loginPassword");
+
+// ================================
+// Helpers UI
+// ================================
+function showAuth() {
+  authView.classList.remove("d-none");
+  appView.classList.add("d-none");
+  navAuthed.classList.add("d-none");
+}
+
+function showApp(user) {
+  authView.classList.add("d-none");
+  appView.classList.remove("d-none");
+  navAuthed.classList.remove("d-none");
+
+  userChip.textContent = user.email || "Usuário Google";
+}
+
+function showError(msg) {
+  authMsg.textContent = msg;
+  authMsg.classList.remove("d-none");
+}
+
+// ================================
+// Google Login
+// ================================
+btnGoogle?.addEventListener("click", async () => {
+  try {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    await auth.signInWithPopup(provider);
+  } catch (e) {
+    showError(e.message);
+  }
+});
+
+// ================================
+// Email Login
+// ================================
+btnEmailLogin?.addEventListener("click", async (e) => {
+  e.preventDefault();
+  try {
+    await auth.signInWithEmailAndPassword(
+      loginEmail.value,
+      loginPassword.value
+    );
+  } catch (e) {
+    showError("Email ou senha inválidos.");
+  }
+});
+
+// ================================
+// Email Signup
+// ================================
+btnEmailSignup?.addEventListener("click", async () => {
+  try {
+    await auth.createUserWithEmailAndPassword(
+      loginEmail.value,
+      loginPassword.value
+    );
+  } catch (e) {
+    showError(e.message);
+  }
+});
+
+// ================================
+// Logout
+// ================================
+btnLogout?.addEventListener("click", async () => {
+  await auth.signOut();
+  showAuth();
+});
+
+// ================================
+// Auth State Listener
+// ================================
+auth.onAuthStateChanged((user) => {
+  if (user) {
+    UID = user.uid;
+    showApp(user);
+  } else {
+    showAuth();
+  }
+});
 
 // ================================
 // Firestore helpers
