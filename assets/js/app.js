@@ -570,9 +570,13 @@ function buildChart(entries) {
     if (e.type === "income") points[day].income += Number(e.amount || 0);
     if (e.type === "expense") points[day].expense += Number(e.amount || 0);
   }
+
   const labels = Object.keys(points).sort((a, b) => Number(a) - Number(b));
   const incomeData = labels.map((d) => points[d].income);
   const expenseData = labels.map((d) => points[d].expense);
+
+  // ✅ Saldo final (Receitas - Despesas) por dia
+  const balanceData = labels.map((d) => points[d].income - points[d].expense);
 
   const ctx = document.getElementById("chart");
   if (chart) chart.destroy();
@@ -584,6 +588,13 @@ function buildChart(entries) {
       datasets: [
         { label: "Receitas", data: incomeData },
         { label: "Despesas", data: expenseData },
+        {
+          label: "Saldo final",
+          data: balanceData,
+          backgroundColor: "rgba(255, 193, 7, 0.85)", // amarelo (Bootstrap warning)
+          borderColor: "rgba(255, 193, 7, 1)",
+          borderWidth: 1,
+        },
       ],
     },
     options: {
@@ -606,6 +617,7 @@ function buildChart(entries) {
     },
   });
 }
+
 
 function renderAll() {
   const mKey = getSelectedMonthKey();
