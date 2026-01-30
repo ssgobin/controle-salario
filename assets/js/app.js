@@ -586,8 +586,8 @@ function buildChart(entries) {
     data: {
       labels: labels.map((d) => `${d}`),
       datasets: [
-        { label: "Receitas", data: incomeData },
-        { label: "Despesas", data: expenseData },
+        { label: "Receitas", data: incomeData, backgroundColor: "rgba(40, 167, 69, 0.85)" }, // verde (Bootstrap success)
+        { label: "Despesas", data: expenseData, backgroundColor: "rgba(220, 53, 69, 0.85)" }, // vermelho (Bootstrap danger)  
         {
           label: "Saldo final",
           data: balanceData,
