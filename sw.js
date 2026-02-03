@@ -1,4 +1,4 @@
-const CACHE_NAME = "salary-saas-v1";
+const CACHE_NAME = "salary-saas-v2";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -28,13 +28,11 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
 
-  // Navegação: tenta rede, senão cai pro cache
   if (req.mode === "navigate") {
     event.respondWith(fetch(req).catch(() => caches.match("./index.html")));
     return;
   }
 
-  // Estáticos: cache-first
   event.respondWith(
     caches.match(req).then((cached) => {
       if (cached) return cached;

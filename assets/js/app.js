@@ -26,6 +26,308 @@ const db = firebase.firestore();
 
 let UID = null;
 
+// ================================
+// Escopo (pessoal vs cofre compartilhado)
+// ================================
+let SCOPE = { kind: "user", id: null, role: "owner", name: null }; // kind: "user" | "household"
+
+function baseDoc() {
+  if (SCOPE.kind === "household") return db.collection("households").doc(SCOPE.id);
+  return db.collection("users").doc(UID);
+}
+
+function updateScopeUI() {
+  if (!scopeLabel) return;
+  if (SCOPE.kind === "household") {
+    const label = SCOPE.name ? `Cofre: ${SCOPE.name}` : `Cofre: ${SCOPE.id}`;
+    scopeLabel.textContent = label;
+    scopeLabel.classList.remove("text-bg-light");
+    scopeLabel.classList.add("text-bg-warning");
+  } else {
+    scopeLabel.textContent = "Pessoal";
+    scopeLabel.classList.remove("text-bg-warning");
+    scopeLabel.classList.add("text-bg-light");
+  }
+}
+
+// ================================
+// UI helpers (SweetAlert2 opcional)
+// ================================
+async function uiAlert(opts) {
+  if (window.Swal && Swal.fire) return Swal.fire(opts);
+  alert((opts.title ? opts.title + "\n\n" : "") + (opts.text || ""));
+}
+
+async function uiConfirm(opts) {
+  if (window.Swal && Swal.fire) {
+    const res = await Swal.fire({
+      title: opts.title || "Confirmar",
+      text: opts.text || "",
+      icon: opts.icon || "question",
+      showCancelButton: true,
+      confirmButtonText: opts.confirmButtonText || "OK",
+      cancelButtonText: opts.cancelButtonText || "Cancelar",
+      confirmButtonColor: opts.confirmButtonColor,
+    });
+    return !!res.isConfirmed;
+  }
+  return confirm((opts.title ? opts.title + "\n\n" : "") + (opts.text || ""));
+}
+
+function requireAccountForHousehold() {
+  const cur = auth.currentUser;
+  if (!cur || cur.isAnonymous) {
+    uiAlert({
+      title: "Conecte uma conta",
+      text: "Para usar cofre compartilhado, entre com Google ou email e senha.",
+      icon: "info",
+    });
+    return false;
+  }
+  return true;
+}
+
+function makeCode(len = 6) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+let BOOT_SEQ = 0;
+
+async function refreshScopeFromProfile() {
+  SCOPE = { kind: "user", id: UID, role: "owner", name: null };
+
+  const cur = auth.currentUser;
+  if (!cur || cur.isAnonymous) {
+    updateScopeUI();
+    return;
+  }
+
+  try {
+    const uSnap = await userDocRef(UID).get();
+    const hid = uSnap.exists ? (uSnap.data().householdId || null) : null;
+    if (!hid) {
+      updateScopeUI();
+      return;
+    }
+
+    const hRef = db.collection("households").doc(hid);
+    const hSnap = await hRef.get();
+    if (!hSnap.exists) {
+      await userDocRef(UID).set({ householdId: null }, { merge: true });
+      updateScopeUI();
+      return;
+    }
+
+    const memSnap = await hRef.collection("members").doc(UID).get();
+    const role = memSnap.exists ? (memSnap.data().role || "member") : "member";
+    const name = hSnap.data().name || null;
+
+    SCOPE = { kind: "household", id: hid, role, name };
+    updateScopeUI();
+  } catch (e) {
+    console.warn("Falha ao carregar escopo:", e);
+    updateScopeUI();
+  }
+}
+
+async function openHouseholdMenu() {
+  if (!requireAccountForHousehold()) return;
+
+  if (window.Swal && Swal.fire) {
+    const res = await Swal.fire({
+      title: "Cofre compartilhado",
+      html: "<div class='text-start small text-secondary'>Crie um cofre ou entre com um código.</div>",
+      showCancelButton: true,
+      showDenyButton: true,
+      confirmButtonText: "Criar cofre",
+      denyButtonText: "Entrar com código",
+      cancelButtonText: "Cancelar",
+    });
+    if (res.isConfirmed) return createHouseholdFlow();
+    if (res.isDenied) return joinHouseholdFlow();
+    return;
+  }
+
+  const choice = prompt("Digite 1 para criar cofre, 2 para entrar com código:");
+  if (choice === "1") return createHouseholdFlow();
+  if (choice === "2") return joinHouseholdFlow();
+}
+
+async function createHouseholdFlow() {
+  if (!requireAccountForHousehold()) return;
+
+  let name = "Nosso cofre";
+  if (window.Swal && Swal.fire) {
+    const res = await Swal.fire({
+      title: "Criar cofre",
+      input: "text",
+      inputLabel: "Nome do cofre",
+      inputPlaceholder: "Ex: Casa / João&Mirelli / Família",
+      inputValue: name,
+      showCancelButton: true,
+      confirmButtonText: "Criar",
+      cancelButtonText: "Cancelar",
+    });
+    if (!res.isConfirmed) return;
+    name = String(res.value || "").trim() || name;
+  } else {
+    name = prompt("Nome do cofre:", name)?.trim() || name;
+  }
+
+  let hid = null;
+  for (let i = 0; i < 7; i++) {
+    const code = makeCode(6);
+    const ref = db.collection("households").doc(code);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      hid = code;
+      break;
+    }
+  }
+  if (!hid) {
+    await uiAlert({ title: "Erro", text: "Não consegui gerar um código. Tente novamente.", icon: "error" });
+    return;
+  }
+
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error("Sem usuário autenticado.");
+
+  const hRef = db.collection("households").doc(hid);
+
+  // 1) cria o cofre com ownerUid correto
+  await hRef.set(
+    {
+      name,
+      ownerUid: uid,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      version: 1,
+    },
+    { merge: true }
+  );
+
+  // 2) registra você como membro/owner
+  await hRef.collection("members").doc(uid).set(
+    { role: "owner", joinedAt: firebase.firestore.FieldValue.serverTimestamp() },
+    { merge: true }
+  );
+
+  // 3) salva householdId no seu user
+  await userDocRef(uid).set({ householdId: hid }, { merge: true });
+
+
+  await bootstrap();
+
+  await uiAlert({
+    title: "Cofre criado ✅",
+    text: `Código para compartilhar: ${hid}`,
+    icon: "success",
+  });
+}
+
+async function joinHouseholdFlow() {
+  if (!requireAccountForHousehold()) return;
+
+  let code = "";
+  if (window.Swal && Swal.fire) {
+    const res = await Swal.fire({
+      title: "Entrar em um cofre",
+      input: "text",
+      inputLabel: "Código do cofre",
+      inputPlaceholder: "Ex: A1B2C3",
+      showCancelButton: true,
+      confirmButtonText: "Entrar",
+      cancelButtonText: "Cancelar",
+      inputValidator: (v) => (!v || !v.trim() ? "Digite o código" : undefined),
+    });
+    if (!res.isConfirmed) return;
+    code = String(res.value || "").trim().toUpperCase();
+  } else {
+    code = prompt("Código do cofre:")?.trim().toUpperCase() || "";
+    if (!code) return;
+  }
+
+  const hRef = db.collection("households").doc(code);
+  const hSnap = await hRef.get();
+  if (!hSnap.exists) {
+    await uiAlert({ title: "Não encontrado", text: "Código inválido.", icon: "error" });
+    return;
+  }
+
+  await userDocRef(UID).set({ householdId: code }, { merge: true });
+
+  await bootstrap();
+
+  await uiAlert({
+    title: "Pronto ✅",
+    text: `Você entrou no cofre: ${hSnap.data().name || code}`,
+    icon: "success",
+  });
+}
+
+async function leaveHouseholdFlow() {
+  if (SCOPE.kind !== "household") {
+    await uiAlert({ title: "Modo pessoal", text: "Você não está em um cofre.", icon: "info" });
+    return;
+  }
+
+  const ok = await uiConfirm({
+    title: "Sair do cofre?",
+    text: "Você voltará para o modo pessoal neste dispositivo.",
+    icon: "warning",
+    confirmButtonText: "Sair",
+    cancelButtonText: "Cancelar",
+    confirmButtonColor: "#dc3545",
+  });
+  if (!ok) return;
+
+  const hid = SCOPE.id;
+
+  try {
+    await db.collection("households").doc(hid).collection("members").doc(UID).delete();
+  } catch (e) {
+    console.warn("Falha ao remover membership:", e);
+  }
+
+  await userDocRef(UID).set({ householdId: null }, { merge: true });
+
+  await bootstrap();
+  await uiAlert({ title: "Ok", text: "Você saiu do cofre.", icon: "success" });
+}
+
+async function bootstrap() {
+  const cur = auth.currentUser;
+  if (!cur) return;
+
+  const mySeq = ++BOOT_SEQ;
+  UID = cur.uid;
+
+  try {
+    await upsertUserProfile(cur);
+  } catch (e) {
+    console.warn("Falha ao salvar perfil:", e);
+  }
+
+  await refreshScopeFromProfile();
+  if (mySeq !== BOOT_SEQ) return;
+
+  stopListeners();
+
+  const s = await fbLoadSettings();
+  state.config = s || {};
+  setDefaultsIfNeeded();
+  syncConfigToUI();
+
+  listenSettings();
+  await listenMonth(getSelectedMonthKey());
+
+  renderAll();
+}
+
+
 async function ensureAuth() {
   const cur = auth.currentUser;
   if (cur) {
@@ -76,6 +378,9 @@ const btnGoogle = document.getElementById("btnGoogle");
 const btnEmailLogin = document.getElementById("btnEmailLogin");
 const btnEmailSignup = document.getElementById("btnEmailSignup");
 const btnLogout = document.getElementById("btnLogout");
+const btnHousehold = document.getElementById("btnHousehold");
+const btnLeaveHousehold = document.getElementById("btnLeaveHousehold");
+const scopeLabel = document.getElementById("scopeLabel");
 
 const loginEmail = document.getElementById("loginEmail");
 const loginPassword = document.getElementById("loginPassword");
@@ -175,24 +480,60 @@ btnLogout?.addEventListener("click", async () => {
   showAuth();
 });
 
+
+
+// ================================
+// Cofre compartilhado - botões
+// ================================
+btnHousehold?.addEventListener("click", async () => {
+  try {
+    await openHouseholdMenu();
+  } catch (e) {
+    console.error(e);
+    await uiAlert({ title: "Erro", text: e.message || String(e), icon: "error" });
+  }
+});
+
+btnLeaveHousehold?.addEventListener("click", async () => {
+  try {
+    await leaveHouseholdFlow();
+  } catch (e) {
+    console.error(e);
+    await uiAlert({ title: "Erro", text: e.message || String(e), icon: "error" });
+  }
+});
 // ================================
 // Auth State Listener
-// ================================
+let didBoot = false;
+
+async function bootApp() {
+  // Config
+  const s = await fbLoadSettings();
+  state.config = s || {};
+  setDefaultsIfNeeded();
+  syncConfigToUI();
+
+  // Listeners
+  listenSettings();
+  await listenMonth(getSelectedMonthKey());
+
+  renderAll();
+}
+
 auth.onAuthStateChanged(async (user) => {
   if (user) {
     UID = user.uid;
-
-    // 1) Atualiza UI
     showApp(user);
 
-    // 2) Salva/atualiza perfil no Firestore
-    try {
-      await upsertUserProfile(user);
-    } catch (e) {
-      console.warn("Falha ao salvar perfil no Firestore:", e);
-    }
+    try { await upsertUserProfile(user); } catch (e) { console.warn(e); }
 
+    if (!didBoot) {
+      didBoot = true;
+      await bootApp();
+    }
   } else {
+    didBoot = false;
+    UID = null;
     showAuth();
   }
 });
@@ -205,10 +546,10 @@ auth.onAuthStateChanged(async (user) => {
 // users/{uid}/tx/{txId}       -> lançamentos (com monthKey)
 // ================================
 function settingsRef() {
-  return db.collection("users").doc(UID).collection("meta").doc("settings");
+  return baseDoc().collection("meta").doc("settings");
 }
 function txCol() {
-  return db.collection("users").doc(UID).collection("tx");
+  return baseDoc().collection("tx");
 }
 
 async function fbLoadSettings() {
@@ -254,7 +595,7 @@ async function fbDeleteAllTx() {
 }
 
 function recurringCol() {
-  return db.collection("users").doc(UID).collection("recurring");
+  return baseDoc().collection("recurring");
 }
 
 async function fbDeleteAllRecurring() {
@@ -841,8 +1182,8 @@ async function ensureRecurringForMonth(mKey) {
 // ================================
 // Realtime listeners
 // ================================
-let unsubscribeTx = null;
-let unsubscribeSettings = null;
+var unsubscribeTx = null;
+var unsubscribeSettings = null;
 
 function stopListeners() {
   if (typeof unsubscribeTx === "function") unsubscribeTx();
@@ -1098,18 +1439,18 @@ fileImport.addEventListener("change", async () => {
 // ================================
 // Init (Firestore first)
 // ================================
-(async function init() {
-  await ensureAuth();
+// (async function init() {
+//   await ensureAuth();
 
-  // Config
-  const s = await fbLoadSettings();
-  state.config = s || {};
-  setDefaultsIfNeeded();
-  syncConfigToUI();
+//   // Config
+//   const s = await fbLoadSettings();
+//   state.config = s || {};
+//   setDefaultsIfNeeded();
+//   syncConfigToUI();
 
-  // Listeners
-  listenSettings();
-  await listenMonth(getSelectedMonthKey());
+//   // Listeners
+//   listenSettings();
+//   await listenMonth(getSelectedMonthKey());
 
-  renderAll();
-})();
+//   renderAll();
+// })();
