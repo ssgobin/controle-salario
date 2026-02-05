@@ -707,8 +707,78 @@ const fileImport = $("#fileImport");
 let chart;
 
 // Modal
+// Modal
 const entryModalEl = document.getElementById("entryModal");
-const entryModal = new bootstrap.Modal(entryModalEl);
+
+function createNativeModal(el) {
+  let backdrop = null;
+
+  const show = () => {
+    if (!el) return;
+    el.style.display = "block";
+    el.removeAttribute("aria-hidden");
+    el.setAttribute("aria-modal", "true");
+    el.setAttribute("role", "dialog");
+    el.classList.add("show");
+
+    document.body.classList.add("modal-open");
+    document.body.style.overflow = "hidden";
+
+    backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop fade show";
+    document.body.appendChild(backdrop);
+  };
+
+  const hide = () => {
+    if (!el) return;
+    el.classList.remove("show");
+    el.setAttribute("aria-hidden", "true");
+    el.style.display = "none";
+
+    document.body.classList.remove("modal-open");
+    document.body.style.overflow = "";
+
+    if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+    backdrop = null;
+  };
+
+  // fecha ao clicar no backdrop do próprio modal
+  el?.addEventListener("click", (ev) => {
+    if (ev.target === el) hide();
+  });
+
+  // fecha no ESC
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && el.classList.contains("show")) hide();
+  });
+
+  return { show, hide };
+}
+
+const entryModal = (() => {
+  if (!entryModalEl) {
+    console.error('Elemento #entryModal não encontrado.');
+    return { show() {}, hide() {} };
+  }
+
+  // Bootstrap 5 real
+  if (window.bootstrap?.Modal) {
+    return window.bootstrap.Modal.getOrCreateInstance(entryModalEl);
+  }
+
+  // Bootstrap 4 (jQuery)
+  if (window.jQuery && typeof window.jQuery(entryModalEl).modal === "function") {
+    return {
+      show: () => window.jQuery(entryModalEl).modal("show"),
+      hide: () => window.jQuery(entryModalEl).modal("hide"),
+    };
+  }
+
+  // Fallback sem plugin
+  console.warn("Bootstrap Modal plugin não encontrado. Usando fallback nativo.");
+  return createNativeModal(entryModalEl);
+})();
+
 const entryForm = $("#entryForm");
 const entryModalTitle = $("#entryModalTitle");
 const entryId = $("#entryId");
@@ -720,6 +790,7 @@ const entryAmount = $("#entryAmount");
 const entryPaid = $("#entryPaid");
 const entryNotes = $("#entryNotes");
 const entryRecurring = $("#entryRecurring");
+
 
 // ================================
 // Config defaults + sync
@@ -1322,6 +1393,11 @@ entryForm.addEventListener("submit", async (ev) => {
   entryModal.hide();
   renderAll();
 });
+
+document.querySelectorAll('#entryModal [data-bs-dismiss="modal"]').forEach((btn) => {
+  btn.addEventListener("click", () => entryModal.hide());
+});
+
 
 btnReset.addEventListener("click", async () => {
   const ok = confirm("Resetar tudo? Isso apaga seus dados no Firestore (deste usuário).");
