@@ -39,7 +39,7 @@ function baseDoc() {
 function updateScopeUI() {
   if (!scopeLabel) return;
   if (SCOPE.kind === "household") {
-    const label = SCOPE.name ? `Cofre: ${SCOPE.name}` : `Cofre: ${SCOPE.id}`;
+    const label = SCOPE.name ? `Cofre: ${SCOPE.name} - ${SCOPE.id}` : `Cofre: ${SCOPE.name}`;
     scopeLabel.textContent = label;
     scopeLabel.classList.remove("text-bg-light");
     scopeLabel.classList.add("text-bg-warning");
