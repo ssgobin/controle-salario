@@ -386,6 +386,140 @@ async function upsertUserProfile(user) {
 }
 
 // ================================
+// Perfil do usuário
+// ================================
+function fbProfileRef() {
+  if (!UID) throw new Error("Usuário não autenticado.");
+  return db.collection("users").doc(UID);
+}
+
+async function fbLoadProfile() {
+  const snap = await fbProfileRef().get();
+  return snap.exists ? snap.data() : {};
+}
+
+async function fbSaveProfile(partial) {
+  await fbProfileRef().set(
+    {
+      ...partial,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+function getInitials(name = "") {
+  const n = String(name).trim();
+  if (!n) return "U";
+  const parts = n.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function setAvatarFallbackByName(name = "") {
+  if (!userAvatar) return;
+  const initial = getInitials(name);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+      <rect width="100%" height="100%" rx="32" ry="32" fill="#6c757d"/>
+      <text x="50%" y="54%" text-anchor="middle" font-size="24" fill="white" font-family="Arial" font-weight="700">${initial}</text>
+    </svg>`;
+  userAvatar.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  userAvatar.style.visibility = "visible";
+}
+
+function applyUserChip(name, email) {
+  if (userChip) userChip.textContent = name || (email ? email.split("@")[0] : "Usuário");
+  if (userEmailEl) userEmailEl.textContent = email || "";
+  // se não tiver foto, garante fallback pelas iniciais
+  const cur = auth.currentUser;
+  if (!cur?.photoURL) setAvatarFallbackByName(name || "");
+}
+
+async function openProfileFlow() {
+  const cur = auth.currentUser;
+  if (!cur) return;
+
+  const data = await fbLoadProfile();
+
+  const currentName = data.name || cur.displayName || "";
+  const currentEmail = data.email || cur.email || "";
+  const currentPhone = data.phone || "";
+  const currentCity = data.city || "";
+
+  if (window.Swal?.fire) {
+    const res = await Swal.fire({
+      title: "Perfil",
+      html: `
+        <div class="text-start">
+          <label class="form-label mt-1">Nome</label>
+          <input id="pfName" class="swal2-input" placeholder="Seu nome" value="${String(currentName).replace(/"/g, "&quot;")}">
+          
+          <label class="form-label mt-2">Email</label>
+          <input id="pfEmail" class="swal2-input" placeholder="seuemail@..." value="${String(currentEmail).replace(/"/g, "&quot;")}">
+          
+          <label class="form-label mt-2">Telefone</label>
+          <input id="pfPhone" class="swal2-input" placeholder="(00) 00000-0000" value="${String(currentPhone).replace(/"/g, "&quot;")}">
+          
+          <label class="form-label mt-2">Cidade</label>
+          <input id="pfCity" class="swal2-input" placeholder="Sua cidade" value="${String(currentCity).replace(/"/g, "&quot;")}">
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: "Salvar",
+      cancelButtonText: "Cancelar",
+      focusConfirm: false,
+      preConfirm: () => {
+        const name = document.getElementById("pfName")?.value?.trim() || "";
+        const email = document.getElementById("pfEmail")?.value?.trim() || "";
+        const phone = document.getElementById("pfPhone")?.value?.trim() || "";
+        const city = document.getElementById("pfCity")?.value?.trim() || "";
+
+        if (!name) {
+          Swal.showValidationMessage("Nome é obrigatório.");
+          return false;
+        }
+
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          Swal.showValidationMessage("Email inválido.");
+          return false;
+        }
+
+        return { name, email, phone, city };
+      },
+    });
+
+    if (!res.isConfirmed || !res.value) return;
+
+    await fbSaveProfile(res.value);
+    applyUserChip(res.value.name, res.value.email || currentEmail);
+
+    await uiAlert({
+      title: "Perfil salvo ✅",
+      text: "Seus dados foram atualizados com sucesso.",
+      icon: "success",
+    });
+    return;
+  }
+
+  // fallback sem SweetAlert
+  const name = prompt("Nome:", currentName)?.trim();
+  if (!name) return;
+  const email = prompt("Email:", currentEmail)?.trim() || "";
+  const phone = prompt("Telefone:", currentPhone)?.trim() || "";
+  const city = prompt("Cidade:", currentCity)?.trim() || "";
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return uiAlert({ title: "Erro", text: "Email inválido.", icon: "error" });
+  }
+
+  await fbSaveProfile({ name, email, phone, city });
+  applyUserChip(name, email || currentEmail);
+  await uiAlert({ title: "Perfil salvo ✅", text: "Dados atualizados.", icon: "success" });
+}
+
+
+// ================================
 // AUTH UI
 // ================================
 const authView = document.getElementById("authView");
@@ -414,33 +548,31 @@ function showAuth() {
   navAuthed.classList.add("d-none");
 }
 
-function showApp(user) {
+async function showApp(user) {
   authView.classList.add("d-none");
   appView.classList.remove("d-none");
   navAuthed.classList.remove("d-none");
 
-  const name = user.displayName || (user.email ? user.email.split("@")[0] : "Usuário");
-  const email = user.email || "";
+  let name = user.displayName || (user.email ? user.email.split("@")[0] : "Usuário");
+  let email = user.email || "";
 
-  userChip.textContent = name;
-  if (userEmailEl) userEmailEl.textContent = email;
+  try {
+    const prof = await fbLoadProfile();
+    if (prof?.name) name = prof.name;
+    if (prof?.email) email = prof.email;
+  } catch (e) {
+    console.warn("Falha ao carregar perfil salvo:", e);
+  }
 
-  // Foto Google (ou fallback)
+  applyUserChip(name, email);
+
   const photo = user.photoURL;
   if (userAvatar) {
     if (photo) {
       userAvatar.src = photo;
       userAvatar.style.visibility = "visible";
     } else {
-      // fallback: avatar “transparente” com iniciais via data URL simples
-      const initial = (name || "U").trim().slice(0, 1).toUpperCase();
-      const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
-          <rect width="100%" height="100%" rx="32" ry="32" fill="#6c757d"/>
-          <text x="50%" y="54%" text-anchor="middle" font-size="28" fill="white" font-family="Arial" font-weight="700">${initial}</text>
-        </svg>`;
-      userAvatar.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
-      userAvatar.style.visibility = "visible";
+      setAvatarFallbackByName(name);
     }
   }
 }
@@ -500,6 +632,18 @@ btnLogout?.addEventListener("click", async () => {
   showAuth();
 });
 
+btnProfile?.addEventListener("click", async () => {
+  try {
+    await openProfileFlow();
+  } catch (e) {
+    console.error(e);
+    await uiAlert({
+      title: "Erro",
+      text: e.message || String(e),
+      icon: "error",
+    });
+  }
+});
 
 
 // ================================
