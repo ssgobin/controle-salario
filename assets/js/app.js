@@ -58,6 +58,26 @@ async function uiAlert(opts) {
   alert((opts.title ? opts.title + "\n\n" : "") + (opts.text || ""));
 }
 
+function applyTheme() {
+  const dark = !!state.config.darkMode;
+  document.body.classList.toggle("dark-mode", dark);
+}
+
+
+const persistFiltersDebounced = debounce(async () => {
+  state.config.searchText = (search?.value || "").trim();
+  state.config.filterType = filterType?.value || "all";
+  state.config.filterStatus = filterStatus?.value || "all";
+  state.config.updatedAt = Date.now();
+  await fbSaveSettings({
+    searchText: state.config.searchText,
+    filterType: state.config.filterType,
+    filterStatus: state.config.filterStatus,
+    updatedAt: state.config.updatedAt,
+  });
+}, 300);
+
+
 async function uiConfirm(opts) {
   if (window.Swal && Swal.fire) {
     const res = await Swal.fire({
@@ -666,6 +686,110 @@ let state = {
   months: {}, // { [monthKey]: { entries: [] } }
 };
 
+// ================================
+// UX/Robustez globals
+// ================================
+let isLoadingMonth = false;
+let isSavingEntry = false;
+let pendingDelete = new Map(); // id -> { entry, mKey, timer }
+
+function setLoading(v) {
+  isLoadingMonth = !!v;
+  document.getElementById("monthLoading")?.classList.toggle("d-none", !isLoadingMonth);
+  document.getElementById("tableSkeleton")?.classList.toggle("d-none", !isLoadingMonth);
+  document.getElementById("rows")?.classList.toggle("d-none", isLoadingMonth);
+}
+
+function debounce(fn, wait = 200) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), wait);
+  };
+}
+
+async function safeRun(actionName, fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    console.error(`[${actionName}]`, err);
+    await uiAlert({
+      title: "Algo deu errado",
+      text: `Falha em "${actionName}". Tente novamente.`,
+      icon: "error",
+    });
+    throw err;
+  }
+}
+
+function showToast(type = "success", title = "Concluído", opts = {}) {
+  const {
+    text = "",
+    timer = 1800,
+    position = "top-end",
+    confirm = false
+  } = opts;
+
+  // normaliza tipo
+  const icon = type === "error" ? "error"
+            : type === "warning" ? "warning"
+            : type === "info" ? "info"
+            : "success";
+
+  // SweetAlert2 (bonito)
+  if (window.Swal?.fire) {
+    return Swal.fire({
+      toast: true,
+      position,
+      icon,
+      title,
+      text,
+      showConfirmButton: confirm,
+      confirmButtonText: "OK",
+      timer: confirm ? undefined : timer,
+      timerProgressBar: !confirm,
+      customClass: {
+        popup: "pretty-toast"
+      },
+      showClass: {
+        popup: "animate__animated animate__fadeInRight animate__faster"
+      },
+      hideClass: {
+        popup: "animate__animated animate__fadeOutRight animate__faster"
+      },
+      didOpen: (toast) => {
+        if (!confirm) {
+          toast.addEventListener("mouseenter", Swal.stopTimer);
+          toast.addEventListener("mouseleave", Swal.resumeTimer);
+        }
+      }
+    });
+  }
+
+  // fallback Bootstrap
+  const toastEl = document.getElementById("appToast");
+  const bodyEl = document.getElementById("appToastBody");
+  if (toastEl && bodyEl && window.bootstrap?.Toast) {
+    bodyEl.textContent = `${title}${text ? " • " + text : ""}`;
+    toastEl.classList.remove("text-bg-success", "text-bg-info", "text-bg-warning", "text-bg-danger");
+    const cls = {
+      success: "text-bg-success",
+      info: "text-bg-info",
+      warning: "text-bg-warning",
+      error: "text-bg-danger",
+    };
+    toastEl.classList.add(cls[type] || "text-bg-info");
+    window.bootstrap.Toast.getOrCreateInstance(toastEl, { autohide: true, delay: timer }).show();
+    return;
+  }
+
+  // fallback final
+  console.log(`[${type}] ${title} ${text}`);
+}
+
+
+
+
 function getMonthData(mKey) {
   state.months[mKey] ??= { entries: [] };
   return state.months[mKey];
@@ -703,8 +827,12 @@ const btnReset = $("#btnReset");
 const btnToday = $("#btnToday");
 const btnExport = $("#btnExport");
 const fileImport = $("#fileImport");
+const btnThemeToggle = document.getElementById("btnThemeToggle");
 
 let chart;
+
+const PAGE_SIZE = 20;
+let currentPage = 1;
 
 // Modal
 // Modal
@@ -802,7 +930,13 @@ function setDefaultsIfNeeded() {
   if (typeof state.config.autoIncomeEnabled !== "boolean") state.config.autoIncomeEnabled = true;
   if (typeof state.config.autoIncomeDay1 !== "number") state.config.autoIncomeDay1 = 5;
   if (typeof state.config.autoIncomeDay2 !== "number") state.config.autoIncomeDay2 = 20;
+
+  // novos defaults de UX
+  if (typeof state.config.searchText !== "string") state.config.searchText = "";
+  if (!["all", "income", "expense"].includes(state.config.filterType)) state.config.filterType = "all";
+  if (!["all", "open", "paid"].includes(state.config.filterStatus)) state.config.filterStatus = "all";
 }
+
 
 function syncConfigToUI() {
   monthPicker.value = state.config.selectedMonth || monthKeyNow();
@@ -810,6 +944,12 @@ function syncConfigToUI() {
   autoIncomeEnabled.checked = !!state.config.autoIncomeEnabled;
   autoIncomeDay1.value = state.config.autoIncomeDay1 ?? 5;
   autoIncomeDay2.value = state.config.autoIncomeDay2 ?? 20;
+
+  // restaura últimos filtros
+  if (search) search.value = state.config.searchText || "";
+  if (filterType) filterType.value = state.config.filterType || "all";
+  if (filterStatus) filterStatus.value = state.config.filterStatus || "all";
+  applyTheme();
 }
 
 async function syncUIToConfigAndSave() {
@@ -863,6 +1003,49 @@ function filteredEntries(entries) {
     return true;
   });
 }
+
+function paginate(list) {
+  const totalPages = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  currentPage = Math.min(currentPage, totalPages);
+  const start = (currentPage - 1) * PAGE_SIZE;
+  return {
+    totalPages,
+    pageItems: list.slice(start, start + PAGE_SIZE),
+  };
+}
+
+function renderPagination(totalPages) {
+  const box = document.getElementById("paginationBox");
+  if (!box) return;
+
+  if (totalPages <= 1) {
+    box.innerHTML = "";
+    return;
+  }
+
+  box.innerHTML = `
+    <div class="d-flex gap-2 justify-content-end align-items-center mt-2">
+      <button id="pgPrev" class="btn btn-sm btn-outline-secondary" ${currentPage <= 1 ? "disabled" : ""}>Anterior</button>
+      <span class="small text-secondary">Página ${currentPage} de ${totalPages}</span>
+      <button id="pgNext" class="btn btn-sm btn-outline-secondary" ${currentPage >= totalPages ? "disabled" : ""}>Próxima</button>
+    </div>
+  `;
+
+  document.getElementById("pgPrev")?.addEventListener("click", () => {
+    if (currentPage > 1) {
+      currentPage--;
+      renderAll();
+    }
+  });
+
+  document.getElementById("pgNext")?.addEventListener("click", () => {
+    if (currentPage < totalPages) {
+      currentPage++;
+      renderAll();
+    }
+  });
+}
+
 
 function computeSummary(entries) {
   const income = entries
@@ -923,9 +1106,10 @@ function escapeHtml(str) {
 }
 
 function renderTable(entries) {
-  const list = sortEntries(filteredEntries(entries));
+  const full = sortEntries(filteredEntries(entries));
+  const { pageItems, totalPages } = paginate(full);
 
-  rows.innerHTML = list
+  rows.innerHTML = pageItems
     .map((e) => {
       const amount = brl(e.amount);
       return `
@@ -940,8 +1124,7 @@ function renderTable(entries) {
         <td class="text-end fw-bold">${amount}</td>
         <td class="text-center">
           <div class="form-check d-inline-flex align-items-center justify-content-center">
-            <input class="form-check-input" type="checkbox" ${e.paid ? "checked" : ""
-        } data-action="togglePaid" data-id="${e.id}">
+            <input class="form-check-input" type="checkbox" ${e.paid ? "checked" : ""} data-action="togglePaid" data-id="${e.id}">
           </div>
         </td>
         <td class="text-end">
@@ -971,7 +1154,12 @@ function renderTable(entries) {
       togglePaid(id, ev.currentTarget.checked);
     });
   });
+
+  renderPagination(totalPages);
+  
+
 }
+
 
 function buildChart(entries) {
   const points = {};
@@ -1089,16 +1277,55 @@ async function onDelete(id) {
   const e = md.entries.find((x) => x.id === id);
   if (!e) return;
 
-  const ok = confirm(`Excluir "${e.name}"?`);
+  const ok = await uiConfirm({
+    title: "Excluir lançamento?",
+    text: `“${e.name}” será removido.`,
+    icon: "warning",
+    confirmButtonText: "Excluir",
+    cancelButtonText: "Cancelar",
+    confirmButtonColor: "#dc3545",
+  });
   if (!ok) return;
 
-  // Firestore
-  await fbDeleteTx(id);
-
-  // Local
+  // remove local imediatamente (efeito rápido)
   deleteEntryLocal(mKey, id);
   renderAll();
+
+  // agenda commit definitivo em 5s
+  const timer = setTimeout(async () => {
+    await safeRun("excluir lançamento", async () => {
+      await fbDeleteTx(id);
+      pendingDelete.delete(id);
+      showToast("success", "Exclusão confirmada ✅", 1200);
+
+    });
+  }, 5000);
+
+  pendingDelete.set(id, { entry: e, mKey, timer });
+
+  // toast undo
+  const undoToastEl = document.getElementById("undoToast");
+  const undoMsg = document.getElementById("undoToastMsg");
+  const undoBtn = document.getElementById("undoToastBtn");
+
+  if (undoMsg) undoMsg.textContent = `Lançamento excluído: ${e.name}`;
+  const toastInst = window.bootstrap?.Toast?.getOrCreateInstance(undoToastEl, { delay: 5000 });
+  toastInst?.show();
+
+  if (undoBtn) {
+    undoBtn.onclick = () => {
+      const p = pendingDelete.get(id);
+      if (!p) return;
+      clearTimeout(p.timer);
+      upsertEntryLocal(p.mKey, p.entry);
+      pendingDelete.delete(id);
+      renderAll();
+      showToast("info", "Exclusão desfeita ↩️", 1200);
+      toastInst?.hide();
+    };
+  }
 }
+
 
 async function togglePaid(id, paid) {
   const mKey = getSelectedMonthKey();
@@ -1106,16 +1333,16 @@ async function togglePaid(id, paid) {
   const e = md.entries.find((x) => x.id === id);
   if (!e) return;
 
-  e.paid = !!paid;
-  e.updatedAt = Date.now();
-
-  // Firestore
-  await fbUpsertTx(e);
-
-  // Local
-  upsertEntryLocal(mKey, e);
-  renderAll();
+  await safeRun("alterar status de pagamento", async () => {
+    e.paid = !!paid;
+    e.updatedAt = Date.now();
+    await fbUpsertTx(e);
+    upsertEntryLocal(mKey, e);
+    renderAll();
+    showToast("success", e.paid ? "Marcado como pago ✅" : "Marcado como em aberto ⏳", 1200);
+  });
 }
+
 
 // ================================
 // Auto income (gera e salva no Firestore)
@@ -1277,21 +1504,35 @@ function listenSettings() {
 async function listenMonth(mKey) {
   if (unsubscribeTx) unsubscribeTx();
 
+  setLoading(true);
+
   // limpa local do mês antes de repopular
   state.months[mKey] = { entries: [] };
 
-  // 1) garante as recorrências do mês ANTES de escutar snapshot
+  // garante recorrências antes do snapshot
   await ensureRecurringForMonth(mKey);
 
-  // 2) agora liga o realtime
   unsubscribeTx = txCol()
     .where("monthKey", "==", mKey)
-    .onSnapshot((snap) => {
-      const md = getMonthData(mKey);
-      md.entries = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      renderAll();
-    });
+    .onSnapshot(
+      (snap) => {
+        const md = getMonthData(mKey);
+        md.entries = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setLoading(false);
+        renderAll();
+      },
+      (err) => {
+        console.error("onSnapshot month error:", err);
+        setLoading(false);
+        uiAlert({
+          title: "Erro de sincronização",
+          text: "Não foi possível sincronizar os lançamentos agora.",
+          icon: "error",
+        });
+      }
+    );
 }
+
 
 
 // ================================
@@ -1322,9 +1563,44 @@ autoIncomeDay2.addEventListener("change", async () => {
   await syncUIToConfigAndSave();
 });
 
-search.addEventListener("input", () => renderAll());
-filterType.addEventListener("change", () => renderAll());
-filterStatus.addEventListener("change", () => renderAll());
+search.addEventListener("input", () => {
+  renderAll();
+  persistFiltersDebounced();
+});
+
+filterType.addEventListener("change", () => {
+  renderAll();
+  persistFiltersDebounced();
+});
+
+filterStatus.addEventListener("change", () => {
+  renderAll();
+  persistFiltersDebounced();
+});
+
+document.addEventListener("keydown", (ev) => {
+  const tag = (ev.target?.tagName || "").toLowerCase();
+  const typing = ["input", "textarea", "select"].includes(tag);
+  if (typing) return;
+
+  if (ev.key.toLowerCase() === "n") {
+    ev.preventDefault();
+    openNew("expense");
+  }
+  if (ev.key.toLowerCase() === "r") {
+    ev.preventDefault();
+    openNew("income");
+  }
+});
+
+btnThemeToggle?.addEventListener("click", async () => {
+  state.config.darkMode = !state.config.darkMode;
+  state.config.updatedAt = Date.now();
+  applyTheme();
+  await fbSaveSettings({ darkMode: state.config.darkMode, updatedAt: state.config.updatedAt });
+  showToast("success", state.config.darkMode ? "Tema escuro ativado 🌙" : "Tema claro ativado ☀️", 1200);
+});
+
 
 btnGenerateIncome.addEventListener("click", generateAutoIncome);
 btnAddExpense.addEventListener("click", () => openNew("expense"));
@@ -1341,58 +1617,113 @@ btnToday.addEventListener("click", async () => {
 
 entryForm.addEventListener("submit", async (ev) => {
   ev.preventDefault();
+  if (isSavingEntry) return;
 
-  const mKey = getSelectedMonthKey();
-  const id = cleanId(entryId.value);
+  await safeRun("salvar lançamento", async () => {
+    isSavingEntry = true;
 
-  const entry = {
-    id,
-    monthKey: mKey,
-    type: entryType.value,
-    name: entryName.value.trim(),
-    category: entryCategory.value.trim(),
-    amount: Number(entryAmount.value || 0),
-    due: entryDue.value,
-    paid: !!entryPaid.checked,
-    notes: entryNotes.value.trim(),
-    autoIncome: false,
-    createdAt: Date.now(), // ok mesmo em edição, não afeta muito
-    updatedAt: Date.now(),
-  };
+    const btnSave = document.getElementById("btnSaveEntry");
+    if (btnSave) {
+      btnSave.disabled = true;
+      btnSave.textContent = "Salvando...";
+    }
 
-  if (!entry.name) return alert("Informe um nome.");
-  if (!entry.due) return alert("Informe o vencimento.");
-  if (!(entry.amount >= 0)) return alert("Valor inválido.");
+    const mKey = getSelectedMonthKey();
 
+    // IMPORTANTE: captura o valor antes de qualquer hide/reset
+    const currentId = cleanId(entryId.value);
+    const isEdit = !!currentId;
+    const now = Date.now();
 
-  // Recorrência mensal (template + instância)
-  entry.recurring = !!(entryRecurring && entryRecurring.checked);
-  if (entry.recurring) {
-    const dayOfMonth = Number((entry.due || "").slice(8, 10) || 1);
-    const template = {
-      id: entry.instanceOf || uid(),
-      enabled: true,
-      freq: "monthly",
-      dayOfMonth,
-      type: entry.type,
-      name: entry.name,
-      category: entry.category,
-      amount: entry.amount,
-      notes: entry.notes,
+    const rawName = (entryName.value || "").replace(/\s+/g, " ").trim();
+    const rawCategory = (entryCategory.value || "").replace(/\s+/g, " ").trim();
+    const dueVal = (entryDue.value || "").trim();
+    const amountVal = Number(entryAmount.value || 0);
+
+    // validações de negócio
+    if (rawName.length < 3) {
+      throw new Error("Nome deve ter ao menos 3 caracteres.");
+    }
+    if (!dueVal || Number.isNaN(new Date(`${dueVal}T00:00:00`).getTime())) {
+      throw new Error("Data de vencimento inválida.");
+    }
+    if (!(amountVal > 0)) {
+      throw new Error("Valor deve ser maior que zero.");
+    }
+    if (entryType.value === "expense" && !rawCategory) {
+      throw new Error("Informe a categoria da despesa.");
+    }
+
+    // mantém createdAt em edição
+    let createdAt = now;
+    if (isEdit) {
+      const md = getMonthData(mKey);
+      const old = md.entries.find((x) => x.id === currentId);
+      if (old?.createdAt) createdAt = old.createdAt;
+    }
+
+    const entry = {
+      id: currentId || uid(),
+      monthKey: mKey,
+      type: entryType.value,
+      name: rawName,
+      category: rawCategory,
+      amount: amountVal,
+      due: dueVal,
+      paid: !!entryPaid.checked,
+      notes: (entryNotes.value || "").replace(/\s+/g, " ").trim(),
+      autoIncome: false,
+      recurring: !!(entryRecurring && entryRecurring.checked),
+      createdAt,
+      updatedAt: now,
     };
-    const templateId = await fbUpsertRecurring(template);
-    entry.instanceOf = templateId;
-  }
 
-  // Salva no Firestore
-  await fbUpsertTx(entry);
+    // recorrência
+    if (entry.recurring) {
+      const dayOfMonth = Number((entry.due || "").slice(8, 10) || 1);
+      const template = {
+        id: entry.instanceOf || uid(),
+        enabled: true,
+        freq: "monthly",
+        dayOfMonth,
+        type: entry.type,
+        name: entry.name,
+        category: entry.category,
+        amount: entry.amount,
+        notes: entry.notes,
+      };
+      const templateId = await fbUpsertRecurring(template);
+      entry.instanceOf = templateId;
+    }
 
-  // Local (o realtime já vai atualizar, mas deixa responsivo instantâneo)
-  upsertEntryLocal(mKey, entry);
+    await fbUpsertTx(entry);
+    upsertEntryLocal(mKey, entry);
+    renderAll();
 
-  entryModal.hide();
-  renderAll();
+    showToast("success", isEdit ? "Alterações aplicadas ✏️" : "Lançamento salvo ✅");
+
+
+    // hide só depois do toast/set de estado
+    entryModal.hide();
+  }).catch(async (err) => {
+    const msg = err?.message || "Confira os campos.";
+    showToast("warning", msg, 2200);
+    await uiAlert({
+      title: "Validação",
+      text: msg,
+      icon: "warning",
+    });
+  }).finally(() => {
+    isSavingEntry = false;
+    const btnSave = document.getElementById("btnSaveEntry");
+    if (btnSave) {
+      btnSave.disabled = false;
+      btnSave.textContent = "Salvar";
+    }
+  });
 });
+
+
 
 document.querySelectorAll('#entryModal [data-bs-dismiss="modal"]').forEach((btn) => {
   btn.addEventListener("click", () => entryModal.hide());
