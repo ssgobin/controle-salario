@@ -11,26 +11,36 @@ Aplicação web para controle financeiro pessoal e compartilhado, com autentica�
 
 ## ✨ Funcionalidades
 
-- Autenticação com:
+- Autenticação:
   - Google
   - Email e senha
-- Gestão financeira por mês (`YYYY-MM`)
-- Cadastro e edição de:
-  - Recebimentos
-  - Despesas
-- Controle de status de pagamento
-- Resumo automático:
-  - Total de receitas
-  - Total de despesas
-  - Saldo do mês
-  - Valor pago + barra de progresso
-- Geração de recebimentos automáticos (2 parcelas, dias configuráveis)
-- Recorrência mensal
+- Gestão por mês (`YYYY-MM`)
+- Lançamentos:
+  - Recebimentos e Despesas (CRUD)
+  - Filtros por tipo e status, busca por nome/categoria
+  - Marcar como pago
+- Resumo:
+  - Receitas, Despesas, Saldo
+  - Pago + barra de progresso
+- Gráficos:
+  - Receitas vs Despesas por dia (Chart.js)
+  - Despesas por categoria (Chart.js)
+- Projeções:
+  - Calculadas com base em salário mensal e recorrências
+  - Mostra meses futuros com receitas, despesas e saldo projetado
+- Metas:
+  - Definição de meta mensal de economia e exibição
+- Análise por Período:
+  - Soma de receitas, despesas e saldo entre dois meses
+- Comparativo de Meses:
+  - Tabela comparando dois meses e diferença
+- Recebimentos automáticos:
+  - 2 parcelas configuráveis (dias)
+- Recorrência:
+  - Templates mensais para lançamentos repetidos
 - Cofre compartilhado:
-  - Criar cofre com código
-  - Entrar com código
-  - Sair do cofre
-- Exportar / Importar dados em JSON
+  - Criar/entrar/sair por código
+- Importar/Exportar JSON
 - Reset de dados da conta
 
 ---
@@ -52,10 +62,11 @@ Aplicação web para controle financeiro pessoal e compartilhado, com autentica�
 ```text
 .
 ├─ index.html
-├─ app.js
 └─ assets/
    ├─ css/
    │  └─ styles.css
+   ├─ js/
+   │  └─ app.js
    └─ img/
       ├─ favicon-16x16.png
       ├─ favicon-32x32.png
@@ -75,7 +86,7 @@ Aplicação web para controle financeiro pessoal e compartilhado, com autentica�
 
 2. Abra com VSCode
 
-3. Rode com **Live Server** no `index.html`
+3. Rode com **Live Server** abrindo `index.html`
 
 > Dica: o próprio código comenta que Live Server ajuda no fluxo local.
 
@@ -130,6 +141,9 @@ A aplicação alterna entre escopo pessoal e cofre via variável de contexto (`S
 - Recebimentos automáticos dividem o salário em 2 partes (50/50).
 - Recorrências geram novos lançamentos mensais com base em templates.
 - O estado da interface é atualizado conforme escopo e autenticação.
+- Projeções usam salário mensal e somatório de recorrências para estimar meses futuros.
+- Metas armazenam a meta mensal (goalMonthly) em settings.
+- Período e Comparativo consultam Firestore para montar somas e diferenças.
 
 ---
 
