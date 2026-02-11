@@ -154,3 +154,11 @@ body.dark-mode .small-muted {
 .swal2-timer-progress-bar {
   height: 3px !important;
 }
+/* Layout: evitar rolagem horizontal global */
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+#appView .tab-content {
+  overflow-x: hidden;
+}

@@ -343,6 +343,7 @@ async function bootstrap() {
 
   listenSettings();
   await listenMonth(getSelectedMonthKey());
+  listenFiis();
 
   renderAll();
 }
@@ -695,10 +696,14 @@ auth.onAuthStateChanged(async (user) => {
       didBoot = true;
       await bootApp();
     }
+    try { await runProjections(); } catch { }
+    try { syncGoalUI(); } catch { }
   } else {
     didBoot = false;
     UID = null;
     showAuth();
+    const projRows = document.getElementById("projRows");
+    if (projRows) projRows.innerHTML = "";
   }
 });
 
@@ -827,7 +832,7 @@ function dateFromMonthDay(monthKey, day) {
 // ================================
 let state = {
   config: {},
-  months: {}, // { [monthKey]: { entries: [] } }
+  months: {},
 };
 
 // ================================
@@ -876,9 +881,9 @@ function showToast(type = "success", title = "Concluído", opts = {}) {
 
   // normaliza tipo
   const icon = type === "error" ? "error"
-            : type === "warning" ? "warning"
-            : type === "info" ? "info"
-            : "success";
+    : type === "warning" ? "warning"
+      : type === "info" ? "info"
+        : "success";
 
   // SweetAlert2 (bonito)
   if (window.Swal?.fire) {
@@ -974,6 +979,7 @@ const fileImport = $("#fileImport");
 const btnThemeToggle = document.getElementById("btnThemeToggle");
 
 let chart;
+let charts = {};
 
 const PAGE_SIZE = 20;
 let currentPage = 1;
@@ -1003,8 +1009,13 @@ function createNativeModal(el) {
 
   const hide = () => {
     if (!el) return;
+    const active = document.activeElement;
+    if (active && el.contains(active)) {
+      try { active.blur(); } catch { }
+    }
     el.classList.remove("show");
     el.setAttribute("aria-hidden", "true");
+    el.removeAttribute("aria-modal");
     el.style.display = "none";
 
     document.body.classList.remove("modal-open");
@@ -1012,6 +1023,7 @@ function createNativeModal(el) {
 
     if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
     backdrop = null;
+    cleanupBackdrops();
   };
 
   // fecha ao clicar no backdrop do próprio modal
@@ -1027,10 +1039,18 @@ function createNativeModal(el) {
   return { show, hide };
 }
 
+function cleanupBackdrops() {
+  try {
+    document.querySelectorAll(".modal-backdrop").forEach((b) => b.remove());
+  } catch { }
+  document.body.classList.remove("modal-open");
+  document.body.style.overflow = "";
+}
+
 const entryModal = (() => {
   if (!entryModalEl) {
     console.error('Elemento #entryModal não encontrado.');
-    return { show() {}, hide() {} };
+    return { show() { }, hide() { } };
   }
 
   // Bootstrap 5 real
@@ -1300,12 +1320,14 @@ function renderTable(entries) {
   });
 
   renderPagination(totalPages);
-  
+
 
 }
 
 
 function buildChart(entries) {
+  const legacy = document.getElementById("chart");
+  if (!legacy) return;
   const points = {};
   for (const e of entries) {
     if (!e.due) continue;
@@ -1322,8 +1344,10 @@ function buildChart(entries) {
   // ✅ Saldo final (Receitas - Despesas) por dia
   const balanceData = labels.map((d) => points[d].income - points[d].expense);
 
-  const ctx = document.getElementById("chart");
-  if (chart) chart.destroy();
+  const ctx = legacy;
+  if (chart) {
+    try { chart.destroy(); } catch { }
+  }
 
   chart = new Chart(ctx, {
     type: "bar",
@@ -1362,6 +1386,73 @@ function buildChart(entries) {
   });
 }
 
+function buildDailyChart(entries) {
+  const el = document.getElementById("chartDaily");
+  if (!el) return;
+  const points = {};
+  for (const e of entries) {
+    if (!e.due) continue;
+    const day = e.due.slice(8, 10);
+    points[day] ??= { income: 0, expense: 0 };
+    if (e.type === "income") points[day].income += Number(e.amount || 0);
+    if (e.type === "expense") points[day].expense += Number(e.amount || 0);
+  }
+  const labels = Object.keys(points).sort((a, b) => Number(a) - Number(b));
+  const incomeData = labels.map((d) => points[d].income);
+  const expenseData = labels.map((d) => points[d].expense);
+  const balanceData = labels.map((d) => points[d].income - points[d].expense);
+  if (charts.chartDaily) {
+    try { charts.chartDaily.destroy(); } catch { }
+  }
+  charts.chartDaily = new Chart(el, {
+    type: "bar",
+    data: {
+      labels: labels.map((d) => `${d}`),
+      datasets: [
+        { label: "Receitas", data: incomeData, backgroundColor: "rgba(40, 167, 69, 0.85)" },
+        { label: "Despesas", data: expenseData, backgroundColor: "rgba(220, 53, 69, 0.85)" },
+        { label: "Saldo final", data: balanceData, backgroundColor: "rgba(255, 193, 7, 0.85)", borderColor: "rgba(255,193,7,1)", borderWidth: 1 },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: "bottom" },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${brl(ctx.raw)}` } },
+      },
+      scales: { y: { ticks: { callback: (v) => brl(v) } } },
+    },
+  });
+}
+
+function buildCategoryChart(entries) {
+  const el = document.getElementById("chartByCategory");
+  if (!el) return;
+  const totals = {};
+  for (const e of entries) {
+    if (e.type !== "expense") continue;
+    const cat = (e.category || "Outros").trim();
+    totals[cat] = (totals[cat] || 0) + Number(e.amount || 0);
+  }
+  const labels = Object.keys(totals);
+  const data = labels.map((k) => totals[k]);
+  const colors = labels.map((_, i) => `hsl(${(i * 47) % 360} 70% 55% / 0.9)`);
+  if (charts.chartByCategory) {
+    try { charts.chartByCategory.destroy(); } catch { }
+  }
+  charts.chartByCategory = new Chart(el, {
+    type: "doughnut",
+    data: { labels, datasets: [{ data, backgroundColor: colors }] },
+    options: {
+      plugins: {
+        legend: { position: "bottom" },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${brl(ctx.raw)}` } },
+      },
+    },
+  });
+}
+
+
 
 function renderAll() {
   const mKey = getSelectedMonthKey();
@@ -1370,6 +1461,8 @@ function renderAll() {
   renderSummary(entries);
   renderTable(entries);
   buildChart(entries);
+  buildDailyChart(entries);
+  buildCategoryChart(entries);
 }
 
 // ================================
@@ -1679,10 +1772,11 @@ async function listenMonth(mKey) {
 
 
 
+
 // ================================
 // Events
 // ================================
-monthPicker.addEventListener("change", async () => {
+monthPicker?.addEventListener("change", async () => {
   // salva mês escolhido no settings
   state.config.selectedMonth = monthPicker.value || monthKeyNow();
   await fbSaveSettings({ selectedMonth: state.config.selectedMonth, updatedAt: Date.now() });
@@ -1693,31 +1787,31 @@ monthPicker.addEventListener("change", async () => {
 
 });
 
-salaryMonthly.addEventListener("change", async () => {
+salaryMonthly?.addEventListener("change", async () => {
   await syncUIToConfigAndSave();
   renderAll();
 });
-autoIncomeEnabled.addEventListener("change", async () => {
+autoIncomeEnabled?.addEventListener("change", async () => {
   await syncUIToConfigAndSave();
 });
-autoIncomeDay1.addEventListener("change", async () => {
+autoIncomeDay1?.addEventListener("change", async () => {
   await syncUIToConfigAndSave();
 });
-autoIncomeDay2.addEventListener("change", async () => {
+autoIncomeDay2?.addEventListener("change", async () => {
   await syncUIToConfigAndSave();
 });
 
-search.addEventListener("input", () => {
-  renderAll();
-  persistFiltersDebounced();
-});
-
-filterType.addEventListener("change", () => {
+search?.addEventListener("input", () => {
   renderAll();
   persistFiltersDebounced();
 });
 
-filterStatus.addEventListener("change", () => {
+filterType?.addEventListener("change", () => {
+  renderAll();
+  persistFiltersDebounced();
+});
+
+filterStatus?.addEventListener("change", () => {
   renderAll();
   persistFiltersDebounced();
 });
@@ -1746,11 +1840,11 @@ btnThemeToggle?.addEventListener("click", async () => {
 });
 
 
-btnGenerateIncome.addEventListener("click", generateAutoIncome);
-btnAddExpense.addEventListener("click", () => openNew("expense"));
-btnAddIncome.addEventListener("click", () => openNew("income"));
+btnGenerateIncome?.addEventListener("click", generateAutoIncome);
+btnAddExpense?.addEventListener("click", () => openNew("expense"));
+btnAddIncome?.addEventListener("click", () => openNew("income"));
 
-btnToday.addEventListener("click", async () => {
+btnToday?.addEventListener("click", async () => {
   state.config.selectedMonth = monthKeyNow();
   await fbSaveSettings({ selectedMonth: state.config.selectedMonth, updatedAt: Date.now() });
   syncConfigToUI();
@@ -1759,7 +1853,7 @@ btnToday.addEventListener("click", async () => {
 
 });
 
-entryForm.addEventListener("submit", async (ev) => {
+entryForm?.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   if (isSavingEntry) return;
 
@@ -1870,7 +1964,10 @@ entryForm.addEventListener("submit", async (ev) => {
 
 
 document.querySelectorAll('#entryModal [data-bs-dismiss="modal"]').forEach((btn) => {
-  btn.addEventListener("click", () => entryModal.hide());
+  btn.addEventListener("click", () => {
+    entryModal.hide();
+    cleanupBackdrops();
+  });
 });
 
 
@@ -1919,7 +2016,7 @@ btnExport.addEventListener("click", async () => {
   URL.revokeObjectURL(url);
 });
 
-fileImport.addEventListener("change", async () => {
+fileImport?.addEventListener("change", async () => {
   const f = fileImport.files?.[0];
   if (!f) return;
 
@@ -1987,6 +2084,160 @@ fileImport.addEventListener("change", async () => {
   }
 });
 
+// ================================
+// Features: Projeções, Metas, Período, Comparativo
+// ================================
+function monthKeyAdd(mk, delta) {
+  const [y, m] = mk.split("-").map(Number);
+  const d0 = new Date(y, m - 1 + delta, 1);
+  const yy = d0.getFullYear();
+  const mm = String(d0.getMonth() + 1).padStart(2, "0");
+  return `${yy}-${mm}`;
+}
+function computeSummary(list) {
+  let income = 0, expense = 0, paid = 0;
+  for (const e of list) {
+    const v = Number(e.amount || 0);
+    if (e.type === "income") income += v;
+    if (e.type === "expense") {
+      expense += v;
+      if (e.paid) paid += v;
+    }
+  }
+  const balance = income - expense;
+  const pct = expense ? (paid / expense) * 100 : 0;
+  return { income, expense, paid, balance, pct };
+}
+async function runProjections() {
+  const projRows = document.getElementById("projRows");
+  if (!projRows) return;
+  if (!UID) return;
+  try {
+    const mk = (state?.config?.selectedMonth) || monthKeyNow();
+    const rec = await fbListRecurring();
+    const salary = Number(state?.config?.salaryMonthly || 0);
+    const autoEnabled = !!state?.config?.autoIncomeEnabled;
+    const months = [mk, monthKeyAdd(mk, 1), monthKeyAdd(mk, 2)];
+    projRows.innerHTML = months.map((mkey) => {
+      const incomeRec = rec.filter((r) => (r.type || "expense") === "income").reduce((a, b) => a + Number(b.amount || 0), 0);
+      const expenseRec = rec.filter((r) => (r.type || "expense") === "expense").reduce((a, b) => a + Number(b.amount || 0), 0);
+      const income = (autoEnabled ? salary : 0) + incomeRec;
+      const expense = expenseRec;
+      const balance = income - expense;
+      return `
+        <tr>
+          <td>${mkey}</td>
+          <td class="text-end">${brl(income)}</td>
+          <td class="text-end">${brl(expense)}</td>
+          <td class="text-end fw-bold">${brl(balance)}</td>
+        </tr>
+      `;
+    }).join("");
+  } catch (e) {
+    console.error(e);
+  }
+}
+function syncGoalUI() {
+  const goalMonthly = document.getElementById("goalMonthly");
+  const goalCurrent = document.getElementById("goalCurrent");
+  const g = Number(state?.config?.goalMonthly || 0);
+  if (goalMonthly) goalMonthly.value = g || 0;
+  if (goalCurrent) goalCurrent.textContent = brl(g);
+}
+async function saveGoal() {
+  const goalMonthly = document.getElementById("goalMonthly");
+  const v = Number(goalMonthly?.value || 0);
+  state.config.goalMonthly = v;
+  state.config.updatedAt = Date.now();
+  await fbSaveSettings({ goalMonthly: v, updatedAt: state.config.updatedAt });
+  syncGoalUI();
+}
+async function runPeriod() {
+  const periodIncome = document.getElementById("periodIncome");
+  const periodExpense = document.getElementById("periodExpense");
+  const periodBalance = document.getElementById("periodBalance");
+  const periodStart = document.getElementById("periodStart");
+  const periodEnd = document.getElementById("periodEnd");
+  if (!periodIncome || !periodExpense || !periodBalance) return;
+  if (!UID) return;
+  const s = periodStart?.value;
+  const e = periodEnd?.value;
+  if (!s || !e) return;
+  try {
+    const all = await fbListAllTx();
+    const list = all.filter((x) => x.monthKey >= s && x.monthKey <= e);
+    const sum = computeSummary(list);
+    periodIncome.textContent = brl(sum.income);
+    periodExpense.textContent = brl(sum.expense);
+    periodBalance.textContent = brl(sum.balance);
+  } catch (err) {
+    console.error(err);
+  }
+}
+async function runCompare() {
+  const cmpRows = document.getElementById("cmpRows");
+  const cmpA = document.getElementById("cmpA");
+  const cmpB = document.getElementById("cmpB");
+  if (!cmpRows) return;
+  if (!UID) return;
+  const a = cmpA?.value || monthKeyNow();
+  const b = cmpB?.value || monthKeyAdd(a, -1);
+  try {
+    const ta = await fbListTxByMonth(a);
+    const tb = await fbListTxByMonth(b);
+    const sa = computeSummary(ta);
+    const sb = computeSummary(tb);
+    cmpRows.innerHTML = `
+      <tr>
+        <td>${a}</td>
+        <td class="text-end">${brl(sa.income)}</td>
+        <td class="text-end">${brl(sa.expense)}</td>
+        <td class="text-end fw-bold">${brl(sa.balance)}</td>
+      </tr>
+      <tr>
+        <td>${b}</td>
+        <td class="text-end">${brl(sb.income)}</td>
+        <td class="text-end">${brl(sb.expense)}</td>
+        <td class="text-end fw-bold">${brl(sb.balance)}</td>
+      </tr>
+      <tr>
+        <td>Diferença</td>
+        <td class="text-end">${brl(sa.income - sb.income)}</td>
+        <td class="text-end">${brl(sa.expense - sb.expense)}</td>
+        <td class="text-end fw-bold">${brl(sa.balance - sb.balance)}</td>
+      </tr>
+    `;
+  } catch (err) {
+    console.error(err);
+  }
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const tabs = document.getElementById("mainTabs");
+  if (tabs && window.bootstrap?.Tab) {
+    tabs.querySelectorAll('[data-bs-toggle="tab"]').forEach((btn) => {
+      btn.addEventListener("shown.bs.tab", () => {
+        const mKey = getSelectedMonthKey();
+        const md = getMonthData(mKey);
+        const entries = md.entries || [];
+        buildDailyChart(entries);
+        buildCategoryChart(entries);
+        runProjections();
+        syncGoalUI();
+      });
+    });
+  }
+  document.getElementById("btnAddExpense")?.addEventListener("click", () => openNew("expense"));
+  document.getElementById("btnAddIncome")?.addEventListener("click", () => openNew("income"));
+  document.getElementById("goalSaveBtn")?.addEventListener("click", saveGoal);
+  document.getElementById("periodRunBtn")?.addEventListener("click", runPeriod);
+  document.getElementById("cmpRunBtn")?.addEventListener("click", runCompare);
+  if (UID) runProjections();
+  syncGoalUI();
+
+  const modalEl = document.getElementById("entryModal");
+  modalEl?.addEventListener("hidden.bs.modal", cleanupBackdrops);
+  modalEl?.addEventListener("hide.bs.modal", cleanupBackdrops);
+});
 // ================================
 // Init (Firestore first)
 // ================================
